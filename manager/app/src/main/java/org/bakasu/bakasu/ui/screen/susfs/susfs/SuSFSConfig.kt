@@ -55,6 +55,7 @@ import org.bakasu.bakasu.ui.screen.susfs.subpages.StatusTab
 import org.bakasu.bakasu.ui.screen.susfs.subpages.SusKstatTab
 import org.bakasu.bakasu.ui.screen.susfs.subpages.SusMapTab
 import org.bakasu.bakasu.ui.screen.susfs.subpages.SusPathTab
+import org.bakasu.bakasu.ui.screen.susfs.subpages.SusUidFilterTab
 import org.bakasu.bakasu.ui.theme.CardConfig
 import org.bakasu.bakasu.ui.theme.ThemeConfig
 import org.bakasu.bakasu.ui.theme.blurEffect
@@ -198,6 +199,15 @@ fun SuSFSConfigScreen() {
                 nestedScrollConnection = nestedScrollConnection,
                 innerPadding = innerPadding,
                 onRegisterRefresh = onRegisterRefresh,
+            )
+        },
+        SuSFSConfigSubpage(
+            requirePersist = true,
+            title = "UID 过滤",
+        ) { innerPadding, nestedScrollConnection ->
+            SusUidFilterTab(
+                nestedScrollConnection = nestedScrollConnection,
+                innerPadding = innerPadding,
             )
         },
     )
