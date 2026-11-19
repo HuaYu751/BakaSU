@@ -370,6 +370,101 @@ class SuSFSConfigHelper(
         }
     }
 
+    // === HuaYu custom: priority uid filter（ksud 无此操作，直调 ksu_susfs 二进制）===
+
+    private suspend fun execRootCapture(command: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val stdout = ArrayList<String>()
+            val stderr = ArrayList<String>()
+            val result = ksuCliRepository.withNewRootShell {
+                newJob()
+                    .add(command)
+                    .to(stdout, stderr)
+                    .exec()
+            }
+            if (result.isSuccess) stdout.joinToString("\n") else null
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private suspend fun execRootSimple(command: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val stdout = ArrayList<String>()
+            val stderr = ArrayList<String>()
+            ksuCliRepository.withNewRootShell {
+                newJob()
+                    .add(command)
+                    .to(stdout, stderr)
+                    .exec()
+            }.isSuccess
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /** 应用 UID 过滤名单到内核，并持久化到 /data/adb/susfs4ksu/priority_uid_filter.conf */
+    suspend fun setPriorityUidFilter(packages: List<String>): Boolean {
+        val joined = packages.joinToString(",")
+        val applied = execRootSimple(
+            "${shellQuote("/data/adb/ksu/bin/ksu_susfs")} set_priority_uid_filter ${shellQuote(joined)}"
+        )
+        val persist = if (packages.isEmpty()) {
+            execRootSimple("mkdir -p /data/adb/susfs4ksu && rm -f /data/adb/susfs4ksu/priority_uid_filter.conf")
+        } else {
+            execRootSimple(
+                "mkdir -p /data/adb/susfs4ksu && printf '%s\\n' " +
+                    packages.joinToString(" ") { shellQuote(it) } +
+                    " > /data/adb/susfs4ksu/priority_uid_filter.conf"
+            )
+        }
+        return applied
+    }
+
+    /** 读取持久化的 UID 过滤名单 */
+    suspend fun loadPriorityUidFilter(): List<String> {
+        val out = execRootCapture("cat /data/adb/susfs4ksu/priority_uid_filter.conf 2>/dev/null") ?: return emptyList()
+        return out.split("\n")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+    }
+
+    /**
+     * 按包名自动生成 sus_path 候选集（HuaYu custom）：
+     * 存储 6 条 + 该 App 当前全部进程的 /proc/<pid>（loop 型，App 启动自动重标记）+
+     * /dev、/sys 下属主为该 App UID 的节点。
+     * 返回 (路径, 是否 loop)。
+     */
+    suspend fun generateAppSusPaths(pkg: String): List<Pair<String, Boolean>> = withContext(Dispatchers.IO) {
+        val paths = mutableListOf<Pair<String, Boolean>>()
+        listOf(
+            "/data/data/$pkg",
+            "/data/user/0/$pkg",
+            "/storage/emulated/0/Android/data/$pkg",
+            "/storage/emulated/0/Android/obb/$pkg",
+            "/data/media/0/Android/data/$pkg",
+            "/data/media/0/Android/obb/$pkg",
+        ).forEach { paths.add(it to false) }
+        val ps = execRootCapture("ps -A -o PID,USER,ARGS") ?: ""
+        ps.split("\n").forEach { line ->
+            if (line.contains(pkg) && !line.contains("PID")) {
+                val pid = line.trim().split(Regex("\\s+")).firstOrNull()?.toIntOrNull()
+                if (pid != null && pid > 0) {
+                    paths.add("/proc/$pid" to true)
+                }
+            }
+        }
+        val uidOut = execRootCapture("stat -c %u /data/data/$pkg 2>/dev/null")?.trim()
+        val uid = uidOut?.toIntOrNull()
+        if (uid != null && uid > 10000) {
+            val devOut = execRootCapture("/data/adb/ksu/bin/busybox find /dev -uid $uid 2>/dev/null") ?: ""
+            devOut.split("\n").map { it.trim() }.filter { it.isNotEmpty() }.forEach { paths.add(it to false) }
+            val sysOut = execRootCapture("/data/adb/ksu/bin/busybox find /sys -uid $uid 2>/dev/null | head -50") ?: ""
+            sysOut.split("\n").map { it.trim() }.filter { it.isNotEmpty() }.forEach { paths.add(it to true) }
+        }
+        paths.distinctBy { it.first }
+    }
+
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\"'\"'")}'"
 }
 
