@@ -23,11 +23,13 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.launch
 import org.bakasu.bakasu.R
+import org.bakasu.bakasu.data.susfs.SuSFSConfigHelper
 import org.bakasu.bakasu.domain.model.SusPathItem
 import org.bakasu.bakasu.ui.component.settings.SettingsJumpPageWidget
 import org.bakasu.bakasu.ui.component.settings.SettingsTextFieldWidget
 import org.bakasu.bakasu.ui.screen.susfs.RegisterSuSFSRefresh
 import org.bakasu.bakasu.ui.screen.susfs.SuSFSRefreshRegistrar
+import org.bakasu.bakasu.ui.screen.susfs.component.AppPickerDialog
 import org.bakasu.bakasu.ui.screen.susfs.component.EntryDetailDialog
 import org.bakasu.bakasu.ui.screen.susfs.component.ManualAddDialog
 import org.bakasu.bakasu.ui.screen.susfs.component.SuSFSDescriptionCard
@@ -39,6 +41,7 @@ import org.bakasu.bakasu.ui.viewmodel.SuSFSUiAction
 import org.bakasu.bakasu.ui.viewmodel.SuSFSViewModel
 import org.bakasu.bakasu.ui.viewmodel.awaitSuSFSBoolean
 import org.bakasu.bakasu.ui.viewmodel.awaitSuSFSConfig
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,6 +52,7 @@ fun SusPathTab(
     onRegisterRefresh: SuSFSRefreshRegistrar,
 ) {
     val configHelper = koinViewModel<SuSFSViewModel>()
+    val susfsHelper = koinInject<SuSFSConfigHelper>()
     val snackbarHost = LocalSnackbarHost.current
     val scope = rememberCoroutineScope()
 
@@ -56,7 +60,10 @@ fun SusPathTab(
     var isLoading by remember { mutableStateOf(false) }
 
     var showManualAdd by remember { mutableStateOf(false) }
+    var showAppPicker by remember { mutableStateOf(false) }
     var detailItem by remember { mutableStateOf<SusPathItem?>(null) }
+    // HuaYu custom: 记录按 App 生成时选中的包名，用于生成路径集
+    var appPickerPkg by remember { mutableStateOf<String?>(null) }
 
     var selectedSubtype by remember { mutableStateOf("") }
     val manualPath = remember { TextFieldState() }
@@ -100,6 +107,15 @@ fun SusPathTab(
             SuSFSDescriptionCard(
                 title = stringResource(R.string.sus_loop_paths_description_title),
                 description = stringResource(R.string.sus_loop_paths_description_text),
+            )
+        }
+
+        // HuaYu custom: 按 App 自动生成其存储/proc/sys/dev 路径集并批量加入
+        item {
+            SettingsJumpPageWidget(
+                iconPlaceholder = false,
+                title = "按 App 添加（自动生成其存储/proc/sys/dev 路径）",
+                onClick = { showAppPicker = true },
             )
         }
 
@@ -192,6 +208,46 @@ fun SusPathTab(
             }
         },
     )
+
+    // HuaYu custom: 按 App 添加——选中应用后自动生成路径集并批量加入 sus_path
+    if (showAppPicker) {
+        AppPickerDialog(
+            showDialog = true,
+            title = "选择要隐藏其路径的应用",
+            onDismiss = { showAppPicker = false },
+            onPick = { pkg ->
+                appPickerPkg = pkg
+                scope.launch {
+                    isLoading = true
+                    try {
+                        val generated = susfsHelper.generateAppSusPaths(pkg)
+                        var successCount = 0
+                        var failCount = 0
+                        generated.forEach { (path, loop) ->
+                            val ok = awaitSuSFSBoolean(configHelper) { reply ->
+                                SuSFSUiAction.AddSusPath(
+                                    path = path,
+                                    loop = loop,
+                                    reply = reply,
+                                )
+                            }
+                            if (ok) successCount++ else failCount++
+                        }
+                        if (successCount > 0) {
+                            entries = awaitSuSFSConfig(configHelper) { reply ->
+                                SuSFSUiAction.Refresh(reply)
+                            }?.sus_path.orEmpty()
+                        }
+                        snackbarHost.showReplacingSnackbar(
+                            "已为 $pkg 生成 ${generated.size} 条路径：成功 $successCount，失败 $failCount"
+                        )
+                    } finally {
+                        isLoading = false
+                    }
+                }
+            },
+        )
+    }
 
     detailItem?.let { item ->
         EntryDetailDialog(
